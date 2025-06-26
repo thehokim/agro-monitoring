@@ -40,14 +40,14 @@ jobs:
             docker run -d --name project2_blue -p 8202:8080 thehokim/project2:latest
           fi
 
-      - name: 🔁 Switch NGINX config
+      - name: 🔁 Switch NGINX config (project2)
         run: |
           if [ "${{ env.ACTIVE }}" == "blue" ]; then
-            sudo /usr/bin/sed -i 's/server 127.0.0.1:8201;/# server 127.0.0.1:8201;\nserver 127.0.0.1:8202;/' /etc/nginx/sites-available/project2.conf
+            sudo sed -i 's/server 127.0.0.1:8201;/# server 127.0.0.1:8201;\nserver 127.0.0.1:8202;/' /etc/nginx/sites-available/project2.conf
           else
-            sudo /usr/bin/sed -i 's/server 127.0.0.1:8202;/# server 127.0.0.1:8202;\nserver 127.0.0.1:8201;/' /etc/nginx/sites-available/project2.conf
+            sudo sed -i 's/server 127.0.0.1:8202;/# server 127.0.0.1:8202;\nserver 127.0.0.1:8201;/' /etc/nginx/sites-available/project2.conf
           fi
-          sudo /bin/systemctl reload nginx
+          sudo systemctl reload nginx
 
       - name: 🧹 Remove old version
         run: |
