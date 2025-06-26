@@ -1,0 +1,58 @@
+name: Blue-Green Deploy Project2
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: 📦 Checkout code
+        uses: actions/checkout@v3
+
+      - name: 🛠 Build Docker image
+        run: docker build -t thehokim/project2:latest .
+
+      - name: 🚀 Push Docker image
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+          docker push thehokim/project2:latest
+
+      - name: 🔍 Determine active version
+        id: active
+        run: |
+          if docker ps --format '{{.Names}}' | grep -q project2_blue; then
+            echo "ACTIVE=blue" >> $GITHUB_ENV
+          else
+            echo "ACTIVE=green" >> $GITHUB_ENV
+          fi
+
+      - name: 🚀 Run new container
+        run: |
+          echo "🔁 Current active version: ${{ env.ACTIVE }}"
+          if [ "${{ env.ACTIVE }}" == "blue" ]; then
+            docker rm -f project2_green || true
+            docker run -d --name project2_green -p 8201:8080 thehokim/project2:latest
+          else
+            docker rm -f project2_blue || true
+            docker run -d --name project2_blue -p 8202:8080 thehokim/project2:latest
+          fi
+
+      - name: 🔁 Switch NGINX config
+        run: |
+          if [ "${{ env.ACTIVE }}" == "blue" ]; then
+            sudo /usr/bin/sed -i 's/server 127.0.0.1:8201;/# server 127.0.0.1:8201;\nserver 127.0.0.1:8202;/' /etc/nginx/sites-available/project2.conf
+          else
+            sudo /usr/bin/sed -i 's/server 127.0.0.1:8202;/# server 127.0.0.1:8202;\nserver 127.0.0.1:8201;/' /etc/nginx/sites-available/project2.conf
+          fi
+          sudo /bin/systemctl reload nginx
+
+      - name: 🧹 Remove old version
+        run: |
+          if [ "${{ env.ACTIVE }}" == "blue" ]; then
+            docker stop project2_blue && docker rm project2_blue
+          else
+            docker stop project2_green && docker rm project2_green
+          fi
