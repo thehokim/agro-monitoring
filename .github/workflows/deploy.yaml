@@ -34,11 +34,12 @@ jobs:
           echo "🔁 Current active version: ${{ env.ACTIVE }}"
           if [ "${{ env.ACTIVE }}" == "blue" ]; then
             docker rm -f project2_green || true
-            docker run -d --name project2_green -p 8201:8080 thehokim/project2:latest
+            docker run -d --name project2_green --add-host=host.docker.internal:host-gateway -p 8201:8080 thehokim/project2:latest
           else
             docker rm -f project2_blue || true
-            docker run -d --name project2_blue -p 8202:8080 thehokim/project2:latest
+            docker run -d --name project2_blue --add-host=host.docker.internal:host-gateway -p 8202:8080 thehokim/project2:latest
           fi
+
 
       - name: 🔁 Switch NGINX config (project2)
         run: |
