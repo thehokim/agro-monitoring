@@ -12,6 +12,9 @@ jobs:
       - name: 📦 Checkout code
         uses: actions/checkout@v3
 
+      - name: 📄 Create .env file from secret
+        run: echo "${{ secrets.ENV_FILE }}" > .env
+
       - name: 🛠 Build Docker image
         run: docker build -t thehokim/project2:latest .
 
@@ -34,24 +37,16 @@ jobs:
           echo "🔁 Current active version: ${{ env.ACTIVE }}"
           if [ "${{ env.ACTIVE }}" == "blue" ]; then
             docker rm -f project2_green || true
-            docker run -d \
-              --name project2_green \
-              --network=host \
-              -e MINIO_ENDPOINT=http://127.0.0.1:9000 \
-              -e MINIO_ACCESS_KEY=uz-kosmos \
-              -e MINIO_SECRET_KEY=bmvFEj9WB39GKhqzuKmb \
-              -p 8201:8080 \
-              thehokim/project2:latest
+            docker run -d --name project2_green \
+              --env-file .env \
+              --add-host=host.docker.internal:host-gateway \
+              -p 8201:8080 thehokim/project2:latest
           else
             docker rm -f project2_blue || true
-            docker run -d \
-              --name project2_blue \
-              --network=host \
-              -e MINIO_ENDPOINT=http://127.0.0.1:9000 \
-              -e MINIO_ACCESS_KEY=uz-kosmos \
-              -e MINIO_SECRET_KEY=bmvFEj9WB39GKhqzuKmb \
-              -p 8202:8080 \
-              thehokim/project2:latest
+            docker run -d --name project2_blue \
+              --env-file .env \
+              --add-host=host.docker.internal:host-gateway \
+              -p 8202:8080 thehokim/project2:latest
           fi
 
       - name: 🔁 Switch NGINX config (project2)
