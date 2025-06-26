@@ -1,44 +1,43 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
+from typing import List
+from fastapi import (
+    FastAPI, UploadFile, File, Form,
+    Depends, HTTPException
+)
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette.status import HTTP_401_UNAUTHORIZED
 from minio import Minio
 from io import BytesIO
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from models import Base, AgroData, ActionLog
-import secrets
+from models import AgroData, ActionLog
+import secrets, logging
 
-# Настройка FastAPI
 app = FastAPI()
 security = HTTPBasic()
 
-# Учетка для входа
 VALID_USERNAME = "uz-kosmos"
 VALID_PASSWORD = "bmvFEj9WB39GKhqzuKmb"
 
-# Подключение к Minio
 minio_client = Minio(
     "192.168.20.30:9000",
     access_key=VALID_USERNAME,
     secret_key=VALID_PASSWORD,
-    secure=False
+    secure=False,
 )
-
 BUCKET_NAME = "uploads"
 if not minio_client.bucket_exists(BUCKET_NAME):
     minio_client.make_bucket(BUCKET_NAME)
 
-# Подключение к PostgreSQL
-DATABASE_URL = "postgresql+psycopg2://agro_user:agro_password@192.168.20.30:5434/agro_monitoring"
+engine = create_engine(
+    "postgresql+psycopg2://agro_user:agro_password@192.168.20.30:5434/agro_monitoring"
+)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Авторизация
 def check_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     if not (
-        secrets.compare_digest(credentials.username, VALID_USERNAME) and
-        secrets.compare_digest(credentials.password, VALID_PASSWORD)
+        secrets.compare_digest(credentials.username, VALID_USERNAME)
+        and secrets.compare_digest(credentials.password, VALID_PASSWORD)
     ):
         raise HTTPException(
             status_code=HTTP_401_UNAUTHORIZED,
@@ -47,51 +46,67 @@ def check_credentials(credentials: HTTPBasicCredentials = Depends(security)):
         )
     return credentials.username
 
-# Эндпоинт загрузки
-@app.post("/upload-agro/")
+
+@app.post("/upload-agro/", dependencies=[Depends(check_credentials)])
 async def upload_agro_data(
     crop_id: int = Form(...),
     maydon: int = Form(...),
     ekin_turi: str = Form(...),
     update_id: int = Form(...),
-    rasm: UploadFile = File(...),
-    username: str = Depends(check_credentials)
+    rasmlar: List[UploadFile] = File(..., description="Список файлов"),
 ):
+    """
+    Принимает несколько файлов form-поля **rasmlar**.
+    Метаданные (crop_id, maydon …) одинаковы для всех фото.
+    """
     db = SessionLocal()
+    uploaded, failed = [], []
+
     try:
-        content = await rasm.read()
-        file_stream = BytesIO(content)
-        minio_client.put_object(
-            bucket_name=BUCKET_NAME,
-            object_name=rasm.filename,
-            data=file_stream,
-            length=len(content),
-            content_type=rasm.content_type
-        )
+        for file in rasmlar:                        # ← не переопределяем список
+            try:
+                content = await file.read()
+                minio_client.put_object(
+                    bucket_name=BUCKET_NAME,
+                    object_name=file.filename,
+                    data=BytesIO(content),
+                    length=len(content),
+                    content_type=file.content_type,
+                )
 
-        # ⬇️ Сохраняем данные
-        agro_data = AgroData(
-            crop_id=crop_id,
-            maydon=maydon,
-            ekin_turi=ekin_turi,
-            update_id=update_id,
-            filename=rasm.filename
-        )
-        db.add(agro_data)
+                db.add(
+                    AgroData(
+                        crop_id=crop_id,
+                        maydon=maydon,
+                        ekin_turi=ekin_turi,
+                        update_id=update_id,
+                        filename=file.filename,
+                    )
+                )
+                db.add(
+                    ActionLog(
+                        action="create",
+                        crop_id=crop_id,
+                        update_id=update_id,
+                        filename=file.filename,
+                    )
+                )
 
-        # ⬇️ Добавляем лог
-        log = ActionLog(
-            action="create",
-            crop_id=crop_id,
-            update_id=update_id,
-            filename=rasm.filename
-        )
-        db.add(log)
+                uploaded.append(file.filename)
 
-        db.commit()
-        return {"msg": "Ma'lumotlar yuklandi", "file": rasm.filename}
+            except Exception as inner:
+                failed.append({"file": file.filename, "error": str(inner)})
+
+        db.commit() if uploaded else db.rollback()
+
+        return {
+            "uploaded": uploaded,
+            "failed": failed,
+            "total": len(rasmlar),          # ← длина исходного списка
+        }
+
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}")
     finally:
         db.close()
