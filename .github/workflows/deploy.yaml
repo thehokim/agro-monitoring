@@ -52,7 +52,13 @@ jobs:
       - name: 🧹 Remove old version
         run: |
           if [ "${{ env.ACTIVE }}" == "blue" ]; then
-            docker stop project2_blue && docker rm project2_blue
+            if docker ps -a --format '{{.Names}}' | grep -q project2_blue; then
+              docker stop project2_blue
+              docker rm project2_blue
+            fi
           else
-            docker stop project2_green && docker rm project2_green
-          fi
+            if docker ps -a --format '{{.Names}}' | grep -q project2_green; then
+              docker stop project2_green
+              docker rm project2_green
+            fi
+
