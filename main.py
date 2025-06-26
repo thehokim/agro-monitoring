@@ -18,7 +18,7 @@ VALID_PASSWORD = "bmvFEj9WB39GKhqzuKmb"
 
 # Подключение к Minio
 minio_client = Minio(
-    "localhost:9000",
+    "192.168.20.30:9000",
     access_key=VALID_USERNAME,
     secret_key=VALID_PASSWORD,
     secure=False
