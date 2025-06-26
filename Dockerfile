@@ -1,15 +1,22 @@
-FROM python:3.12-alpine
+# Базовый образ
+FROM python:3.12-slim
 
-#  ... твои слои
+# Переменные окружения
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt               \
-    && pip cache purge                                           \
-    && adduser -D app                                            \
-    && chown -R app /app
-
-USER app
-
-COPY . /app
+# Создание рабочей директории
 WORKDIR /app
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+
+# Установка зависимостей
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копирование кода
+COPY . .
+
+# Открытие порта
+EXPOSE 8000
+
+# Команда запуска
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
