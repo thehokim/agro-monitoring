@@ -61,4 +61,4 @@ jobs:
               docker stop project2_green
               docker rm project2_green
             fi
-
+          fi
