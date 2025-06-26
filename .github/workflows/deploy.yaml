@@ -2,72 +2,94 @@ name: Blue-Green Deploy Project2
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   deploy:
     runs-on: self-hosted
 
     steps:
-      - name: 📦 Checkout code
-        uses: actions/checkout@v3
+    # 1. Клон кода
+    - name: 📦 Checkout code
+      uses: actions/checkout@v3
 
-      - name: 📄 Create .env file from secret
-        run: echo "${{ secrets.ENV_FILE }}" > .env
+    # 2. ==== MinIO ============================================================
+    - name: 🏗️  Ensure MinIO is up-to-date
+      run: |
+        set -eu
+        # образ всегда свежий
+        docker pull quay.io/minio/minio:latest
 
-      - name: 🛠 Build Docker image
-        run: docker build -t thehokim/project2:latest .
+        # если контейнера нет – создаём;
+        # если есть, но образ обновился – пересоздаём
+        if ! docker ps --format '{{.Names}}' | grep -q '^minio$'; then
+          echo "→ (Re)creating MinIO container"
+          docker rm -f minio 2>/dev/null || true
+          docker run -d --name minio --restart unless-stopped \
+            -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER="${{ secrets.MINIO_ROOT_USER }}" \
+            -e MINIO_ROOT_PASSWORD="${{ secrets.MINIO_ROOT_PASSWORD }}" \
+            -v /opt/minio/data:/data \
+            quay.io/minio/minio:latest server /data --console-address ':9001'
+        fi
+    # -------------------------------------------------------------------------
 
-      - name: 🚀 Push Docker image
-        run: |
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
-          docker push thehokim/project2:latest
+    # 3. Сборка и push образа приложения
+    - name: 🛠 Build Docker image
+      run: docker build -t thehokim/project2:latest .
 
-      - name: 🔍 Determine active version
-        id: active
-        run: |
-          if docker ps --format '{{.Names}}' | grep -q project2_blue; then
-            echo "ACTIVE=blue" >> $GITHUB_ENV
-          else
-            echo "ACTIVE=green" >> $GITHUB_ENV
-          fi
+    - name: 🚀 Push Docker image
+      run: |
+        echo "${{ secrets.DOCKER_PASSWORD }}" | \
+          docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+        docker push thehokim/project2:latest
 
-      - name: 🚀 Run new container
-        run: |
-          echo "🔁 Current active version: ${{ env.ACTIVE }}"
-          if [ "${{ env.ACTIVE }}" == "blue" ]; then
-            docker rm -f project2_green || true
-            docker run -d --name project2_green \
-              --env-file .env \
-              --add-host=host.docker.internal:host-gateway \
-              -p 8201:8080 thehokim/project2:latest
-          else
-            docker rm -f project2_blue || true
-            docker run -d --name project2_blue \
-              --env-file .env \
-              --add-host=host.docker.internal:host-gateway \
-              -p 8202:8080 thehokim/project2:latest
-          fi
+    # 4. Определяем, какая подсистема (blue / green) сейчас жива
+    - name: 🔍 Determine active version
+      id: active
+      run: |
+        if docker ps --format '{{.Names}}' | grep -q '^project2_blue$'; then
+          echo "ACTIVE=blue" >>"$GITHUB_ENV"
+        else
+          echo "ACTIVE=green" >>"$GITHUB_ENV"
+        fi
 
-      - name: 🔁 Switch NGINX config (project2)
-        run: |
-          if [ "${{ env.ACTIVE }}" == "blue" ]; then
-            sudo sed -i 's/server 127.0.0.1:8201;/# server 127.0.0.1:8201;\nserver 127.0.0.1:8202;/' /etc/nginx/sites-available/project2.conf
-          else
-            sudo sed -i 's/server 127.0.0.1:8202;/# server 127.0.0.1:8202;\nserver 127.0.0.1:8201;/' /etc/nginx/sites-available/project2.conf
-          fi
-          sudo systemctl reload nginx
+    # 5. Поднимаем новую ревизию
+    - name: 🚀 Run new container
+      run: |
+        set -eu
+        echo "👉 Active is: ${{ env.ACTIVE }}"
+        if [ "${{ env.ACTIVE }}" = "blue" ]; then
+          docker rm -f project2_green || true
+          docker run -d --name project2_green \
+            --add-host=host.docker.internal:host-gateway \
+            -e MINIO_ENDPOINT=http://192.168.20.30:9000 \
+            -p 8201:8080 thehokim/project2:latest
+        else
+          docker rm -f project2_blue || true
+          docker run -d --name project2_blue \
+            --add-host=host.docker.internal:host-gateway \
+            -e MINIO_ENDPOINT=http://192.168.20.30:9000 \
+            -p 8202:8080 thehokim/project2:latest
+        fi
 
-      - name: 🧹 Remove old version
-        run: |
-          if [ "${{ env.ACTIVE }}" == "blue" ]; then
-            if docker ps -a --format '{{.Names}}' | grep -q project2_blue; then
-              docker stop project2_blue
-              docker rm project2_blue
-            fi
-          else
-            if docker ps -a --format '{{.Names}}' | grep -q project2_green; then
-              docker stop project2_green
-              docker rm project2_green
-            fi
-          fi
+    # 6. Переключаем NGINX
+    - name: 🔁 Switch NGINX config
+      run: |
+        if [ "${{ env.ACTIVE }}" = "blue" ]; then
+          sudo sed -i 's/server 127.0.0.1:8201;/# server 127.0.0.1:8201;\nserver 127.0.0.1:8202;/' \
+            /etc/nginx/sites-available/project2.conf
+        else
+          sudo sed -i 's/server 127.0.0.1:8202;/# server 127.0.0.1:8202;\nserver 127.0.0.1:8201;/' \
+            /etc/nginx/sites-available/project2.conf
+        fi
+        sudo systemctl reload nginx
+
+    # 7. Чистим старую ревизию
+    - name: 🧹 Remove old container
+      run: |
+        if [ "${{ env.ACTIVE }}" = "blue" ]; then
+          docker stop project2_blue && docker rm project2_blue || true
+        else
+          docker stop project2_green && docker rm project2_green || true
+        fi
