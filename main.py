@@ -75,58 +75,62 @@ async def upload_agro_data(
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB limit
 
     with SessionLocal() as db:
-        # Сохранение базовых данных независимо от файлов
-        db.add(AgroData(
-            crop_id=crop_id,
-            maydon=maydon,
-            ekin_turi=ekin_turi,
-            update_id=update_id,
-            filename=None  # None если нет файла
-        ))
-        db.add(ActionLog(
-            action="create",
-            crop_id=crop_id,
-            update_id=update_id,
-            filename=None  # None если нет файла
-        ))
+        # Сохранение базовых данных без файла, если файлов нет
+        if not files:
+            db.add(AgroData(
+                crop_id=crop_id,
+                maydon=maydon,
+                ekin_turi=ekin_turi,
+                update_id=update_id
+            ))
+            db.add(ActionLog(
+                action="create",
+                crop_id=crop_id,
+                update_id=update_id
+            ))
+        else:
+            # Обработка файлов, если они есть
+            for f in files:
+                try:
+                    data = await f.read()
+                    if len(data) > MAX_FILE_SIZE:
+                        failed.append(FailedItem(file=f.filename, error="File size exceeds 10MB limit"))
+                        continue
 
-        # Обработка файлов, если они есть
-        for f in files:
-            try:
-                data = await f.read()
-                if len(data) > MAX_FILE_SIZE:
-                    failed.append(FailedItem(file=f.filename, error="File size exceeds 10MB limit"))
-                    continue
+                    minio_client.put_object(
+                        bucket_name=BUCKET,
+                        object_name=f.filename,
+                        data=BytesIO(data),
+                        length=len(data),
+                        content_type=f.content_type
+                    )
 
-                minio_client.put_object(
-                    bucket_name=BUCKET,
-                    object_name=f.filename,
-                    data=BytesIO(data),
-                    length=len(data),
-                    content_type=f.content_type
-                )
+                    db.add(AgroData(
+                        crop_id=crop_id,
+                        maydon=maydon,
+                        ekin_turi=ekin_turi,
+                        update_id=update_id,
+                        filename=f.filename
+                    ))
+                    db.add(ActionLog(
+                        action="create",
+                        crop_id=crop_id,
+                        update_id=update_id,
+                        filename=f.filename
+                    ))
+                    uploaded.append(f.filename)
+                except Exception as e:
+                    failed.append(FailedItem(file=f.filename, error=str(e)))
 
-                # Обновление записи с именем файла, если файл успешно загружен
-                agro_data = db.query(AgroData).filter_by(crop_id=crop_id, update_id=update_id).first()
-                if agro_data:
-                    agro_data.filename = f.filename
-                db.add(ActionLog(
-                    action="create",
-                    crop_id=crop_id,
-                    update_id=update_id,
-                    filename=f.filename
-                ))
-                uploaded.append(f.filename)
-            except Exception as e:
-                failed.append(FailedItem(file=f.filename, error=str(e)))
-
-        # Коммит в любом случае, так как базовые данные уже добавлены
+        # Коммит в любом случае
         db.commit()
         msg = "Data saved successfully"
         if uploaded:
             msg += f", and {len(uploaded)} file(s) uploaded"
         elif failed:
             msg += f", but no files were uploaded due to errors"
+        elif not files:
+            msg += ", no files provided"
 
     return UploadResponse(
         message=msg,
