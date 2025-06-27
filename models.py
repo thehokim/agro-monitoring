@@ -2,13 +2,14 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String
 from sqlalchemy import DateTime, func
 Base = declarative_base()
+from sqlalchemy import Numeric
 
 class AgroData(Base):
     __tablename__ = "agro_data"
 
     id = Column(Integer, primary_key=True, index=True)
     crop_id = Column(Integer, nullable=False)
-    maydon = Column(Integer, nullable=False)
+    maydon = Column(Numeric(18,4), nullable=False)
     ekin_turi = Column(String, nullable=False)
     update_id = Column(Integer, nullable=False)
     filename = Column(String, nullable=False)
