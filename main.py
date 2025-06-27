@@ -75,21 +75,22 @@ async def upload_agro_data(
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB limit
 
     with SessionLocal() as db:
-        # Сохранение базовых данных без файла, если файлов нет
         if not files:
+            # Сохраняем «пустую» запись с filename="" чтобы не попасть на NOT NULL
             db.add(AgroData(
                 crop_id=crop_id,
                 maydon=maydon,
                 ekin_turi=ekin_turi,
-                update_id=update_id
+                update_id=update_id,
+                filename=""  
             ))
             db.add(ActionLog(
                 action="create",
                 crop_id=crop_id,
-                update_id=update_id
+                update_id=update_id,
+                filename=""
             ))
         else:
-            # Обработка файлов, если они есть
             for f in files:
                 try:
                     data = await f.read()
@@ -122,15 +123,17 @@ async def upload_agro_data(
                 except Exception as e:
                     failed.append(FailedItem(file=f.filename, error=str(e)))
 
-        # Коммит в любом случае
         db.commit()
-        msg = "Data saved successfully"
-        if uploaded:
-            msg += f", and {len(uploaded)} file(s) uploaded"
-        elif failed:
-            msg += f", but no files were uploaded due to errors"
-        elif not files:
-            msg += ", no files provided"
+
+        # Формируем понятный message
+        if not files:
+            msg = "Data saved successfully (no files provided)"
+        elif uploaded and not failed:
+            msg = f"Data and {len(uploaded)} file(s) uploaded successfully"
+        elif uploaded and failed:
+            msg = f"Data saved; {len(uploaded)} file(s) uploaded, {len(failed)} failed"
+        else:
+            msg = "Data saved, but all file uploads failed"
 
     return UploadResponse(
         message=msg,
