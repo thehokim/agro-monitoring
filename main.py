@@ -17,7 +17,7 @@ class FailedItem(BaseModel):
     error: str
 
 class UploadResponse(BaseModel):
-    message: str               # новое поле
+    message: str
     uploaded: List[str]
     failed: List[FailedItem]
     total: int
@@ -52,7 +52,7 @@ def check_credentials(creds: HTTPBasicCredentials = Depends(security)):
         raise HTTPException(
             HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
-            headers={"WWW-Authenticate":"Basic"}
+            headers={"WWW-Authenticate": "Basic"}
         )
     return creds.username
 
@@ -63,55 +63,70 @@ def check_credentials(creds: HTTPBasicCredentials = Depends(security)):
     dependencies=[Depends(check_credentials)]
 )
 async def upload_agro_data(
-    crop_id:      int                       = Form(...),
-    maydon:       str                       = Form(...),
-    ekin_turi:    str                       = Form(...),
-    update_id:    int                       = Form(...),
-    rasmlar:      Optional[List[UploadFile]] = File(None),
+    crop_id: int = Form(...),
+    maydon: str = Form(...),
+    ekin_turi: str = Form(...),
+    update_id: int = Form(...),
+    rasmlar: Optional[List[UploadFile]] = File(None),
 ):
-    db = SessionLocal()
-    uploaded: List[str] = []
-    failed:   List[FailedItem] = []
-
     files = rasmlar or []
 
-    # сохраняем только если есть файлы
-    for f in files:
-        try:
-            data = await f.read()
-            minio_client.put_object(
-                bucket_name=BUCKET,
-                object_name=f.filename,
-                data=BytesIO(data),
-                length=len(data),
-                content_type=f.content_type
-            )
-            # вставляем в БД запись только для этого файла
-            db.add(AgroData(
-                crop_id=crop_id,
-                maydon=maydon,
-                ekin_turi=ekin_turi,
-                update_id=update_id,
-                filename=f.filename
-            ))
-            db.add(ActionLog(
-                action="create",
-                crop_id=crop_id,
-                update_id=update_id,
-                filename=f.filename
-            ))
-            uploaded.append(f.filename)
-        except Exception as e:
-            failed.append(FailedItem(file=f.filename, error=str(e)))
+    # Проверка на отсутствие файлов
+    if not files:
+        return UploadResponse(
+            message="No files provided for upload",
+            uploaded=[],
+            failed=[],
+            total=0
+        )
 
-    if uploaded:
-        db.commit()
-        msg = f"Successfully sent {len(uploaded)} file(s)"
-    else:
-        db.rollback()
-        msg = "No files were uploaded"
+    uploaded: List[str] = []
+    failed: List[FailedItem] = []
+    MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB limit
 
-    db.close()
+    with SessionLocal() as db:
+        for f in files:
+            try:
+                # Проверка размера файла
+                data = await f.read()
+                if len(data) > MAX_FILE_SIZE:
+                    failed.append(FailedItem(file=f.filename, error="File size exceeds 10MB limit"))
+                    continue
+
+                # Загрузка в MinIO
+                minio_client.put_object(
+                    bucket_name=BUCKET,
+                    object_name=f.filename,
+                    data=BytesIO(data),
+                    length=len(data),
+                    content_type=f.content_type
+                )
+
+                # Вставка в БД
+                db.add(AgroData(
+                    crop_id=crop_id,
+                    maydon=maydon,
+                    ekin_turi=ekin_turi,
+                    update_id=update_id,
+                    filename=f.filename
+                ))
+                db.add(ActionLog(
+                    action="create",
+                    crop_id=crop_id,
+                    update_id=update_id,
+                    filename=f.filename
+                ))
+                uploaded.append(f.filename)
+            except Exception as e:
+                failed.append(FailedItem(file=f.filename, error=str(e)))
+
+        # Сохранение в БД только если есть успешно загруженные файлы
+        if uploaded:
+            db.commit()
+            msg = f"Successfully uploaded {len(uploaded)} file(s)"
+        else:
+            db.rollback()
+            msg = "No files were successfully uploaded"
 
     return UploadResponse(
         message=msg,
