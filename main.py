@@ -70,30 +70,34 @@ async def upload_agro_data(
     rasmlar: Optional[List[UploadFile]] = File(None),
 ):
     files = rasmlar or []
-
-    # Проверка на отсутствие файлов
-    if not files:
-        return UploadResponse(
-            message="No files provided for upload",
-            uploaded=[],
-            failed=[],
-            total=0
-        )
-
     uploaded: List[str] = []
     failed: List[FailedItem] = []
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB limit
 
     with SessionLocal() as db:
+        # Сохранение базовых данных независимо от файлов
+        db.add(AgroData(
+            crop_id=crop_id,
+            maydon=maydon,
+            ekin_turi=ekin_turi,
+            update_id=update_id,
+            filename=None  # None если нет файла
+        ))
+        db.add(ActionLog(
+            action="create",
+            crop_id=crop_id,
+            update_id=update_id,
+            filename=None  # None если нет файла
+        ))
+
+        # Обработка файлов, если они есть
         for f in files:
             try:
-                # Проверка размера файла
                 data = await f.read()
                 if len(data) > MAX_FILE_SIZE:
                     failed.append(FailedItem(file=f.filename, error="File size exceeds 10MB limit"))
                     continue
 
-                # Загрузка в MinIO
                 minio_client.put_object(
                     bucket_name=BUCKET,
                     object_name=f.filename,
@@ -102,14 +106,10 @@ async def upload_agro_data(
                     content_type=f.content_type
                 )
 
-                # Вставка в БД
-                db.add(AgroData(
-                    crop_id=crop_id,
-                    maydon=maydon,
-                    ekin_turi=ekin_turi,
-                    update_id=update_id,
-                    filename=f.filename
-                ))
+                # Обновление записи с именем файла, если файл успешно загружен
+                agro_data = db.query(AgroData).filter_by(crop_id=crop_id, update_id=update_id).first()
+                if agro_data:
+                    agro_data.filename = f.filename
                 db.add(ActionLog(
                     action="create",
                     crop_id=crop_id,
@@ -120,13 +120,13 @@ async def upload_agro_data(
             except Exception as e:
                 failed.append(FailedItem(file=f.filename, error=str(e)))
 
-        # Сохранение в БД только если есть успешно загруженные файлы
+        # Коммит в любом случае, так как базовые данные уже добавлены
+        db.commit()
+        msg = "Data saved successfully"
         if uploaded:
-            db.commit()
-            msg = f"Successfully uploaded {len(uploaded)} file(s)"
-        else:
-            db.rollback()
-            msg = "No files were successfully uploaded"
+            msg += f", and {len(uploaded)} file(s) uploaded"
+        elif failed:
+            msg += f", but no files were uploaded due to errors"
 
     return UploadResponse(
         message=msg,
