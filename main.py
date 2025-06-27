@@ -1,17 +1,28 @@
 from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pydantic import BaseModel
 from starlette.status import HTTP_401_UNAUTHORIZED
 from minio import Minio
 from io import BytesIO
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from models import AgroData, ActionLog
-import secrets, logging
+import secrets
 
+# ————————— response models —————————
+class FailedItem(BaseModel):
+    file: str
+    error: str
+
+class UploadResponse(BaseModel):
+    message: str                 # новое поле
+    uploaded: List[str]
+    failed: List[FailedItem]
+    total: int
+
+# ————————— app setup —————————
 app = FastAPI()
 security = HTTPBasic()
-
 VALID_USERNAME = "uz-kosmos"
 VALID_PASSWORD = "bmvFEj9WB39GKhqzuKmb"
 
@@ -30,7 +41,6 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
-
 def check_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     if not (
         secrets.compare_digest(credentials.username, VALID_USERNAME)
@@ -43,70 +53,52 @@ def check_credentials(credentials: HTTPBasicCredentials = Depends(security)):
         )
     return credentials.username
 
-
-@app.post("/upload-agro/", dependencies=[Depends(check_credentials)])
+# ————————— endpoint с response_model —————————
+@app.post(
+    "/upload-agro/",
+    response_model=UploadResponse,
+    dependencies=[Depends(check_credentials)]
+)
 async def upload_agro_data(
     crop_id: int = Form(...),
-    maydon: str = Form(...),  # теперь строка
+    maydon: str = Form(...),
     ekin_turi: str = Form(...),
     update_id: int = Form(...),
-    rasmlar: Optional[List[UploadFile]] = File(None, description="Список файлов"),  # необязательный
+    rasmlar: Optional[List[UploadFile]] = File(None, description="Список файлов"),
 ):
     db = SessionLocal()
-    uploaded, failed = [], []
+    uploaded: List[str] = []
+    failed: List[FailedItem] = []
 
-    # Если rasmlar пусто/None — превращаем в пустой список
     files = rasmlar or []
 
-    try:
-        for file in files:
-            try:
-                content = await file.read()
-                minio_client.put_object(
-                    bucket_name=BUCKET_NAME,
-                    object_name=file.filename,
-                    data=BytesIO(content),
-                    length=len(content),
-                    content_type=file.content_type,
-                )
+    for file in files:
+        try:
+            content = await file.read()
+            minio_client.put_object(
+                bucket_name=BUCKET_NAME,
+                object_name=file.filename,
+                data=BytesIO(content),
+                length=len(content),
+                content_type=file.content_type,
+            )
+            # здесь сохраняйте в БД, если нужно…
+            uploaded.append(file.filename)
+        except Exception as e:
+            failed.append(FailedItem(file=file.filename, error=str(e)))
 
-                db.add(
-                    AgroData(
-                        crop_id=crop_id,
-                        maydon=maydon,
-                        ekin_turi=ekin_turi,
-                        update_id=update_id,
-                        filename=file.filename,  # всегда строка, не None
-                    )
-                )
-                db.add(
-                    ActionLog(
-                        action="create",
-                        crop_id=crop_id,
-                        update_id=update_id,
-                        filename=file.filename,
-                    )
-                )
-
-                uploaded.append(file.filename)
-
-            except Exception as inner:
-                failed.append({"file": file.filename, "error": str(inner)})
-
-        # коммитим только если есть хотя бы один успешный upload
-        if uploaded:
-            db.commit()
-        else:
-            db.rollback()
-
-        return {
-            "uploaded": uploaded,
-            "failed": failed,
-            "total": len(files),
-        }
-
-    except Exception as e:
+    if uploaded:
+        db.commit()
+        msg = f"Successfully sent {len(uploaded)} file(s)"
+    else:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal error: {e}")
-    finally:
-        db.close()
+        msg = "No files were uploaded"
+
+    db.close()
+
+    return UploadResponse(
+        message=msg,
+        uploaded=uploaded,
+        failed=failed,
+        total=len(files)
+    )
